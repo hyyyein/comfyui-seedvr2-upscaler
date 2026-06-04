@@ -16,12 +16,14 @@ if "%PYTHON_CMD%"=="" (
     exit /b 1
 )
 
-if "%COMFYUI_INPUT_DIR%"=="" (
-    set /p "COMFYUI_INPUT_DIR=ComfyUI input directory: "
-)
-
 set /p "NAME=Output filename prefix: "
-%PYTHON_CMD% "%~dp0upscale.py" --name "%NAME%" --input-dir "%COMFYUI_INPUT_DIR%"
+set /p "COMFYUI_URL=ComfyUI URL (blank: http://localhost:8188): "
+
+if "%COMFYUI_URL%"=="" (
+    %PYTHON_CMD% "%~dp0upscale.py" --name "%NAME%"
+) else (
+    %PYTHON_CMD% "%~dp0upscale.py" --name "%NAME%" --comfyui-url "%COMFYUI_URL%"
+)
 
 if errorlevel 1 echo Upscale failed.
 pause

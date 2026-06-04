@@ -1,16 +1,17 @@
 import argparse
 import copy
 import json
+import mimetypes
 import os
 import shutil
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 
-DEFAULT_COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://localhost:8002")
-DEFAULT_INPUT_DIR = os.environ.get("COMFYUI_INPUT_DIR")
+DEFAULT_COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://localhost:8188")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
 WORKFLOW_TEMPLATE = {
@@ -92,6 +93,60 @@ def api_request(comfyui_url, endpoint, data=None):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def encode_multipart_formdata(fields, files):
+    boundary = f"----ComfyUIUpscaler{uuid.uuid4().hex}"
+    body = bytearray()
+
+    for name, value in fields.items():
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8")
+        )
+        body.extend(str(value).encode("utf-8"))
+        body.extend(b"\r\n")
+
+    for name, filename, content, mime_type in files:
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(
+            (
+                f'Content-Disposition: form-data; name="{name}"; '
+                f'filename="{filename}"\r\n'
+            ).encode("utf-8")
+        )
+        body.extend(f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"))
+        body.extend(content)
+        body.extend(b"\r\n")
+
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+    return bytes(body), f"multipart/form-data; boundary={boundary}"
+
+
+def upload_image(comfyui_url, image_path, upload_filename):
+    mime_type = mimetypes.guess_type(upload_filename)[0] or "application/octet-stream"
+    body, content_type = encode_multipart_formdata(
+        fields={"overwrite": "true", "type": "input"},
+        files=[("image", upload_filename, image_path.read_bytes(), mime_type)],
+    )
+    req = urllib.request.Request(
+        f"{comfyui_url.rstrip('/')}/upload/image",
+        data=body,
+        headers={
+            "Content-Type": content_type,
+            "Content-Length": str(len(body)),
+        },
+    )
+
+    with urllib.request.urlopen(req) as resp:
+        payload = resp.read().decode("utf-8")
+        result = json.loads(payload) if payload else {}
+
+    filename = result.get("name", upload_filename)
+    subfolder = result.get("subfolder")
+    if subfolder:
+        return f"{subfolder}/{filename}"
+    return filename
+
+
 def enqueue(comfyui_url, image_filename, output_prefix):
     workflow = copy.deepcopy(WORKFLOW_TEMPLATE)
     workflow["16"]["inputs"]["image"] = image_filename
@@ -131,11 +186,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description="ComfyUI SeedVR2 batch upscaler")
     parser.add_argument("--name", required=True, help="Output filename prefix")
     parser.add_argument(
-        "--input-dir",
-        default=DEFAULT_INPUT_DIR,
-        help="ComfyUI input directory. Can also be set with COMFYUI_INPUT_DIR.",
-    )
-    parser.add_argument(
         "--comfyui-url",
         default=DEFAULT_COMFYUI_URL,
         help="ComfyUI server URL. Can also be set with COMFYUI_URL.",
@@ -152,14 +202,6 @@ def parse_args():
 def main():
     args = parse_args()
     folder = Path(__file__).resolve().parent
-    input_dir = Path(args.input_dir).expanduser().resolve() if args.input_dir else None
-
-    if input_dir is None:
-        raise SystemExit(
-            "Missing ComfyUI input directory. Pass --input-dir or set COMFYUI_INPUT_DIR."
-        )
-    if not input_dir.exists():
-        raise SystemExit(f"ComfyUI input directory does not exist: {input_dir}")
 
     images = get_images(folder)
     if not images:
@@ -173,13 +215,13 @@ def main():
 
     for index, image_path in enumerate(images, 1):
         output_name = f"{args.name}_{index}"
-        input_filename = f"{output_name}.png"
-        input_path = input_dir / input_filename
+        upload_filename = f"{output_name}{image_path.suffix.lower()}"
 
-        shutil.copy2(image_path, input_path)
         print(f"[{index}/{len(images)}] {image_path.name} -> {output_name}")
+        uploaded_filename = upload_image(args.comfyui_url, image_path, upload_filename)
+        print(f"  Uploaded: {uploaded_filename}")
 
-        prompt_id = enqueue(args.comfyui_url, input_filename, output_name)
+        prompt_id = enqueue(args.comfyui_url, uploaded_filename, output_name)
         print(f"  Queued: {prompt_id}")
 
         print("  Waiting...", end="", flush=True)
