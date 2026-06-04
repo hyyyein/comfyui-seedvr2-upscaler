@@ -1,0 +1,16 @@
+done/
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.bmp
+*.tiff
+*.psd
+*.tmp
+*.log
+.env
+__pycache__/
+*.py[cod]
+.venv/
+venv/
